@@ -1,5 +1,12 @@
 # Sistema do Tatuador — Especificação
 
+> **Decisões de 01/11/2026 (valem sobre o texto abaixo):**
+> - **O cliente não tem conta nem senha.** Ele só manda o pedido: pelo formulário público do site (sem login) ou pelo WhatsApp. Depois do formulário, é levado para o WhatsApp do tatuador.
+> - **Só o tatuador entra no sistema.** O sistema serve para fechar pedidos e controlar horários, custos e ganhos.
+> - **Sem chat no sistema:** a conversa fica no WhatsApp. No pedido há um botão "Abrir WhatsApp" e um campo de anotações.
+> - **IA no WhatsApp** (manda as primeiras mensagens e cria o pedido a partir da conversa): fase futura.
+> - Pedidos que chegam pelo WhatsApp, por enquanto, são lançados à mão pelo tatuador.
+
 App web (mobile-first) para **um tatuador** gerenciar orçamentos, conversar com clientes e controlar o custo dos insumos de cada tattoo.
 
 ## Stack

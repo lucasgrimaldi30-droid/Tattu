@@ -1,32 +1,33 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { exigirAdmin } from "@/lib/auth";
 import { criarClienteServidor } from "@/lib/supabase/server";
-import { FUSO } from "@/lib/formatos";
+import { ListaPedidos, SELECT_RESUMO, type PedidoResumo } from "@/components/lista-pedidos";
 
 export const metadata: Metadata = { title: "Painel" };
 
-/** Início e fim (domingo a domingo) da semana atual no fuso da Bahia (UTC−3). */
+/** Domingo 00:00 até o domingo seguinte, no fuso da Bahia (UTC−3, sem horário de verão). */
 function semanaAtual() {
-  const hoje = new Date(new Date().toLocaleString("en-US", { timeZone: FUSO }));
-  const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - hoje.getDay());
-  const fim = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate() + 7);
-  const iso = (d: Date) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T00:00:00-03:00`;
+  const agora = new Date(Date.now() - 3 * 60 * 60 * 1000); // relógio da Bahia em UTC
+  const inicio = new Date(
+    Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), agora.getUTCDate() - agora.getUTCDay()),
+  );
+  const fim = new Date(inicio.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const iso = (d: Date) => `${d.toISOString().slice(0, 10)}T00:00:00-03:00`;
   return { inicio: iso(inicio), fim: iso(fim) };
 }
 
 export default async function Painel() {
-  const usuario = await exigirAdmin();
+  const tatuador = await exigirAdmin();
   const supabase = await criarClienteServidor();
   const { inicio, fim } = semanaAtual();
 
-  const [novos, naoLidas, sessoes, insumos] = await Promise.all([
+  const [novos, negociando, sessoes, insumos, recentes] = await Promise.all([
     supabase.from("orcamentos").select("id", { count: "exact", head: true }).eq("status", "novo"),
     supabase
-      .from("mensagens")
+      .from("orcamentos")
       .select("id", { count: "exact", head: true })
-      .eq("lida", false)
-      .neq("autor_id", usuario.id),
+      .in("status", ["em_conversa", "orcado"]),
     supabase
       .from("sessoes")
       .select("id", { count: "exact", head: true })
@@ -34,33 +35,55 @@ export default async function Painel() {
       .gte("inicio", inicio)
       .lt("inicio", fim),
     supabase.from("insumos").select("estoque_atual, estoque_minimo").eq("ativo", true),
+    supabase
+      .from("orcamentos")
+      .select(SELECT_RESUMO)
+      .eq("status", "novo")
+      .order("criado_em", { ascending: false })
+      .limit(5)
+      .returns<PedidoResumo[]>(),
   ]);
 
   const abaixoDoMinimo =
     insumos.data?.filter((i) => Number(i.estoque_atual) < Number(i.estoque_minimo)).length ?? 0;
 
   const cartoes = [
-    { titulo: "Orçamentos novos", valor: novos.count ?? 0 },
-    { titulo: "Mensagens não lidas", valor: naoLidas.count ?? 0 },
-    { titulo: "Sessões desta semana", valor: sessoes.count ?? 0 },
+    { titulo: "Pedidos novos", valor: novos.count ?? 0, href: "/admin/orcamentos?status=novo" },
+    { titulo: "Em negociação", valor: negociando.count ?? 0, href: "/admin/orcamentos?status=negociando" },
+    { titulo: "Sessões nesta semana", valor: sessoes.count ?? 0 },
     { titulo: "Insumos abaixo do mínimo", valor: abaixoDoMinimo, alerta: abaixoDoMinimo > 0 },
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold">Painel</h1>
-        <p className="mt-1 text-stone-400">Bem-vindo, {usuario.nome || "tatuador"}.</p>
+        <p className="mt-1 text-stone-400">Olá, {tatuador.nome || "tatuador"}.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        {cartoes.map((c) => (
-          <div key={c.titulo} className={`cartao ${c.alerta ? "border-rose-700" : ""}`}>
-            <p className={`text-3xl font-bold ${c.alerta ? "text-rose-400" : ""}`}>{c.valor}</p>
-            <p className="mt-1 text-sm text-stone-400">{c.titulo}</p>
-          </div>
-        ))}
+        {cartoes.map((c) => {
+          const conteudo = (
+            <>
+              <p className={`text-3xl font-bold ${c.alerta ? "text-rose-400" : ""}`}>{c.valor}</p>
+              <p className="mt-1 text-sm text-stone-400">{c.titulo}</p>
+            </>
+          );
+          const classe = `cartao block ${c.alerta ? "border-rose-700" : ""}`;
+          return c.href ? (
+            <Link key={c.titulo} href={c.href} className={`${classe} hover:border-stone-600`}>
+              {conteudo}
+            </Link>
+          ) : (
+            <div key={c.titulo} className={classe}>{conteudo}</div>
+          );
+        })}
       </div>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Pedidos novos</h2>
+        <ListaPedidos pedidos={recentes.data ?? []} />
+      </section>
     </div>
   );
 }

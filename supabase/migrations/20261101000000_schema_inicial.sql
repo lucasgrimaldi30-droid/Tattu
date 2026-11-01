@@ -1,17 +1,21 @@
 -- =====================================================================
 -- Sistema do Tatuador — schema inicial
--- Tabelas, tipos, funções, gatilhos, RLS, Realtime e bucket de fotos.
+--
+-- Só o tatuador (admin) entra no sistema. O cliente não tem conta: o
+-- pedido de orçamento chega pelo formulário público do site (gravado
+-- pelo servidor com a chave secreta) ou é lançado à mão pelo tatuador
+-- quando vem pelo WhatsApp. A conversa acontece no WhatsApp.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
 -- Tipos
 -- ---------------------------------------------------------------------
-create type public.papel_usuario as enum ('admin', 'cliente');
-
 create type public.status_orcamento as enum (
   'novo', 'em_conversa', 'orcado', 'aceito', 'agendado', 'concluido',
   'recusado', 'cancelado'
 );
+
+create type public.origem_orcamento as enum ('site', 'whatsapp', 'manual');
 
 create type public.local_corpo as enum (
   'braco', 'antebraco', 'perna', 'costas', 'peito', 'costela',
@@ -32,17 +36,32 @@ create type public.forma_pagamento as enum ('pix', 'dinheiro', 'debito', 'credit
 -- ---------------------------------------------------------------------
 -- Tabelas
 -- ---------------------------------------------------------------------
+
+-- Quem pode entrar no sistema. Só o tatuador: a linha é criada à mão
+-- no SQL Editor (veja o README). Quem se cadastrar no Auth sem ter
+-- linha aqui não vê nada.
 create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   nome text not null default '',
-  telefone text,
-  role public.papel_usuario not null default 'cliente',
+  criado_em timestamptz not null default now()
+);
+
+create table public.clientes (
+  id uuid primary key default gen_random_uuid(),
+  nome text not null,
+  -- Só dígitos, com DDI (ex.: 5571999998888). Um cadastro por número.
+  telefone text not null unique check (telefone ~ '^[0-9]{10,15}$'),
+  instagram text,
+  observacoes text,
   criado_em timestamptz not null default now()
 );
 
 create table public.orcamentos (
   id uuid primary key default gen_random_uuid(),
-  cliente_id uuid not null references public.profiles (id) on delete cascade,
+  -- Número curto para falar com o cliente: "pedido #12".
+  numero integer generated always as identity unique,
+  cliente_id uuid not null references public.clientes (id) on delete restrict,
+  origem public.origem_orcamento not null default 'site',
   descricao text not null,
   local_corpo public.local_corpo not null,
   tamanho_cm numeric(6, 1) check (tamanho_cm is null or tamanho_cm > 0),
@@ -55,6 +74,7 @@ create table public.orcamentos (
   tempo_estimado_min integer check (tempo_estimado_min is null or tempo_estimado_min > 0),
   sessoes_previstas integer check (sessoes_previstas is null or sessoes_previstas > 0),
   proposta_data timestamptz,
+  anotacoes text,
   criado_em timestamptz not null default now(),
   atualizado_em timestamptz not null default now(),
   constraint valor_faixa_valida check (
@@ -66,21 +86,8 @@ create table public.orcamento_fotos (
   id uuid primary key default gen_random_uuid(),
   orcamento_id uuid not null references public.orcamentos (id) on delete cascade,
   tipo public.tipo_foto not null,
-  storage_path text not null,
+  storage_path text not null unique,
   criado_em timestamptz not null default now()
-);
-
-create table public.mensagens (
-  id uuid primary key default gen_random_uuid(),
-  orcamento_id uuid not null references public.orcamentos (id) on delete cascade,
-  autor_id uuid not null references public.profiles (id) on delete cascade,
-  texto text,
-  foto_path text,
-  lida boolean not null default false,
-  criado_em timestamptz not null default now(),
-  constraint mensagem_nao_vazia check (
-    coalesce(nullif(trim(texto), ''), foto_path) is not null
-  )
 );
 
 create table public.sessoes (
@@ -144,8 +151,8 @@ create table public.pagamentos (
 -- Índices
 create index on public.orcamentos (cliente_id);
 create index on public.orcamentos (status);
+create index on public.orcamentos (criado_em desc);
 create index on public.orcamento_fotos (orcamento_id);
-create index on public.mensagens (orcamento_id, criado_em);
 create index on public.sessoes (orcamento_id);
 create index on public.sessoes (inicio);
 create index on public.compras (insumo_id);
@@ -155,7 +162,7 @@ create index on public.kit_itens (kit_id);
 create index on public.pagamentos (orcamento_id);
 
 -- ---------------------------------------------------------------------
--- Funções auxiliares (usadas pelas políticas de RLS)
+-- Funções e gatilhos
 -- ---------------------------------------------------------------------
 create or replace function public.is_admin()
 returns boolean
@@ -164,125 +171,23 @@ stable
 security definer
 set search_path = ''
 as $$
-  select exists (
-    select 1 from public.profiles
-    where id = auth.uid() and role = 'admin'
-  );
+  select exists (select 1 from public.profiles where id = auth.uid());
 $$;
 
--- O usuário logado pode ver/escrever neste orçamento? (dono ou admin)
-create or replace function public.pode_acessar_orcamento(p_orcamento_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select public.is_admin() or exists (
-    select 1 from public.orcamentos
-    where id = p_orcamento_id and cliente_id = auth.uid()
-  );
-$$;
-
--- Mesma checagem a partir do nome da pasta no Storage (texto).
-create or replace function public.pode_acessar_pasta(p_pasta text)
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select public.is_admin() or exists (
-    select 1 from public.orcamentos
-    where id::text = p_pasta and cliente_id = auth.uid()
-  );
-$$;
-
--- ---------------------------------------------------------------------
--- Gatilhos
--- ---------------------------------------------------------------------
-
--- Cria o perfil (sempre como cliente) quando alguém se cadastra.
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $$
-begin
-  insert into public.profiles (id, nome, telefone)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data ->> 'nome', ''),
-    new.raw_user_meta_data ->> 'telefone'
-  );
-  return new;
-end;
-$$;
-
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-
--- Só o admin muda o papel de alguém. (No SQL Editor do Supabase não há
--- usuário logado, então lá é permitido — é assim que se cria o admin.)
-create or replace function public.proteger_role()
-returns trigger
-language plpgsql
-set search_path = ''
-as $$
-begin
-  if new.role is distinct from old.role
-     and auth.uid() is not null
-     and not public.is_admin() then
-    raise exception 'Sem permissão para alterar o papel do usuário';
-  end if;
-  return new;
-end;
-$$;
-
-create trigger profiles_proteger_role
-  before update on public.profiles
-  for each row execute function public.proteger_role();
-
--- O cliente só pode responder ao orçamento (aceitar/recusar quando
--- estiver 'orcado'). Todo o resto só o tatuador altera.
-create or replace function public.validar_update_orcamento()
+create or replace function public.tocar_atualizado_em()
 returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
   new.atualizado_em := now();
-
-  if auth.uid() is null or public.is_admin() then
-    return new;
-  end if;
-
-  if (new.cliente_id, new.descricao, new.local_corpo, new.tamanho_cm,
-      new.colorida, new.disponibilidade, new.valor_min, new.valor_max,
-      new.tempo_estimado_min, new.sessoes_previstas, new.proposta_data,
-      new.criado_em)
-     is distinct from
-     (old.cliente_id, old.descricao, old.local_corpo, old.tamanho_cm,
-      old.colorida, old.disponibilidade, old.valor_min, old.valor_max,
-      old.tempo_estimado_min, old.sessoes_previstas, old.proposta_data,
-      old.criado_em) then
-    raise exception 'O cliente só pode aceitar ou recusar o orçamento';
-  end if;
-
-  if new.status is distinct from old.status
-     and not (old.status = 'orcado' and new.status in ('aceito', 'recusado')) then
-    raise exception 'Mudança de status não permitida';
-  end if;
-
   return new;
 end;
 $$;
 
-create trigger orcamentos_validar_update
+create trigger orcamentos_atualizado_em
   before update on public.orcamentos
-  for each row execute function public.validar_update_orcamento();
+  for each row execute function public.tocar_atualizado_em();
 
 -- Compra (entrada): soma ao estoque e recalcula o custo médio ponderado.
 create or replace function public.aplicar_compra()
@@ -357,167 +262,71 @@ create trigger consumos_estoque
   after insert or update of quantidade, insumo_id or delete on public.consumos
   for each row execute function public.movimentar_estoque_consumo();
 
--- Marca como lidas as mensagens do orçamento enviadas pela outra pessoa.
-create or replace function public.marcar_mensagens_lidas(p_orcamento_id uuid)
-returns void
+
+-- Cria (ou reaproveita, pelo telefone) o cliente e abre o orçamento numa
+-- transação só. Usada pelo formulário público (servidor, chave secreta)
+-- e pelo lançamento manual do tatuador.
+create or replace function public.registrar_orcamento(
+  p_nome text,
+  p_telefone text,
+  p_origem public.origem_orcamento,
+  p_descricao text,
+  p_local_corpo public.local_corpo,
+  p_tamanho_cm numeric,
+  p_colorida boolean,
+  p_disponibilidade text
+)
+returns table (id uuid, numero integer)
 language plpgsql
-security definer
 set search_path = ''
 as $$
+declare
+  v_cliente uuid;
 begin
-  if not public.pode_acessar_orcamento(p_orcamento_id) then
-    raise exception 'Sem acesso a este orçamento';
-  end if;
+  insert into public.clientes as c (nome, telefone)
+  values (trim(p_nome), p_telefone)
+  on conflict (telefone) do update
+    set nome = case when trim(c.nome) = '' then excluded.nome else c.nome end
+  returning c.id into v_cliente;
 
-  update public.mensagens
-     set lida = true
-   where orcamento_id = p_orcamento_id
-     and autor_id <> auth.uid()
-     and not lida;
+  return query
+  insert into public.orcamentos as o
+    (cliente_id, origem, descricao, local_corpo, tamanho_cm, colorida, disponibilidade)
+  values
+    (v_cliente, p_origem, trim(p_descricao), p_local_corpo, p_tamanho_cm,
+     coalesce(p_colorida, false), nullif(trim(p_disponibilidade), ''))
+  returning o.id, o.numero;
+end;
+$$;
+
+revoke execute on function public.registrar_orcamento from public, anon;
+grant execute on function public.registrar_orcamento to authenticated, service_role;
+
+-- ---------------------------------------------------------------------
+-- Row Level Security: tudo só para o tatuador.
+-- O formulário público grava pelo servidor com a chave secreta
+-- (service role), que não passa por RLS. Visitante anônimo não lê nada.
+-- ---------------------------------------------------------------------
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'profiles', 'clientes', 'orcamentos', 'orcamento_fotos', 'sessoes',
+    'insumos', 'compras', 'consumos', 'kits', 'kit_itens', 'pagamentos'
+  ] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format(
+      'create policy "só o tatuador" on public.%I for all to authenticated '
+      'using (public.is_admin()) with check (public.is_admin())', t);
+  end loop;
 end;
 $$;
 
 -- ---------------------------------------------------------------------
--- Row Level Security
--- ---------------------------------------------------------------------
-alter table public.profiles        enable row level security;
-alter table public.orcamentos      enable row level security;
-alter table public.orcamento_fotos enable row level security;
-alter table public.mensagens       enable row level security;
-alter table public.sessoes         enable row level security;
-alter table public.insumos         enable row level security;
-alter table public.compras         enable row level security;
-alter table public.consumos        enable row level security;
-alter table public.kits            enable row level security;
-alter table public.kit_itens       enable row level security;
-alter table public.pagamentos      enable row level security;
-
--- profiles
-create policy "perfil: ler o próprio ou admin" on public.profiles
-  for select to authenticated
-  using (id = auth.uid() or public.is_admin());
-
-create policy "perfil: editar o próprio ou admin" on public.profiles
-  for update to authenticated
-  using (id = auth.uid() or public.is_admin())
-  with check (id = auth.uid() or public.is_admin());
-
-create policy "perfil: admin apaga" on public.profiles
-  for delete to authenticated
-  using (public.is_admin());
-
--- orcamentos
-create policy "orçamento: dono ou admin lê" on public.orcamentos
-  for select to authenticated
-  using (cliente_id = auth.uid() or public.is_admin());
-
-create policy "orçamento: cliente cria o próprio" on public.orcamentos
-  for insert to authenticated
-  with check (
-    (cliente_id = auth.uid() and status = 'novo'
-      and valor_min is null and valor_max is null
-      and tempo_estimado_min is null and sessoes_previstas is null
-      and proposta_data is null)
-    or public.is_admin()
-  );
-
-create policy "orçamento: dono ou admin atualiza" on public.orcamentos
-  for update to authenticated
-  using (cliente_id = auth.uid() or public.is_admin())
-  with check (cliente_id = auth.uid() or public.is_admin());
-
-create policy "orçamento: admin apaga" on public.orcamentos
-  for delete to authenticated
-  using (public.is_admin());
-
--- orcamento_fotos
-create policy "fotos do orçamento: dono ou admin lê" on public.orcamento_fotos
-  for select to authenticated
-  using (public.pode_acessar_orcamento(orcamento_id));
-
-create policy "fotos do orçamento: dono ou admin envia" on public.orcamento_fotos
-  for insert to authenticated
-  with check (public.pode_acessar_orcamento(orcamento_id));
-
-create policy "fotos do orçamento: dono ou admin apaga" on public.orcamento_fotos
-  for delete to authenticated
-  using (public.pode_acessar_orcamento(orcamento_id));
-
--- mensagens
-create policy "mensagem: participantes leem" on public.mensagens
-  for select to authenticated
-  using (public.pode_acessar_orcamento(orcamento_id));
-
-create policy "mensagem: participantes enviam como si mesmos" on public.mensagens
-  for insert to authenticated
-  with check (
-    autor_id = auth.uid()
-    and lida = false
-    and public.pode_acessar_orcamento(orcamento_id)
-  );
-
-create policy "mensagem: admin edita" on public.mensagens
-  for update to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
-
-create policy "mensagem: admin apaga" on public.mensagens
-  for delete to authenticated
-  using (public.is_admin());
-
--- sessoes (cliente só vê as suas; tatuador gerencia)
-create policy "sessão: dono ou admin lê" on public.sessoes
-  for select to authenticated
-  using (public.pode_acessar_orcamento(orcamento_id));
-
-create policy "sessão: admin gerencia" on public.sessoes
-  for all to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
-
--- pagamentos (cliente só vê os seus; tatuador registra)
-create policy "pagamento: dono ou admin lê" on public.pagamentos
-  for select to authenticated
-  using (public.pode_acessar_orcamento(orcamento_id));
-
-create policy "pagamento: admin gerencia" on public.pagamentos
-  for all to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
-
--- ERP de insumos: só o admin
-create policy "insumos: só admin" on public.insumos
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
-create policy "compras: só admin" on public.compras
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
-create policy "consumos: só admin" on public.consumos
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
-create policy "kits: só admin" on public.kits
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
-create policy "kit_itens: só admin" on public.kit_itens
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
--- Funções expostas pela API: só para usuários logados
-revoke execute on function public.marcar_mensagens_lidas(uuid) from public, anon;
-grant execute on function public.marcar_mensagens_lidas(uuid) to authenticated;
-
--- ---------------------------------------------------------------------
--- Realtime (chat)
--- ---------------------------------------------------------------------
-alter publication supabase_realtime add table public.mensagens;
-
--- ---------------------------------------------------------------------
 -- Storage: bucket privado "fotos", uma pasta por orçamento
---   caminho: <orcamento_id>/<arquivo>
+--   caminho: <orcamento_id>/<tipo>-<arquivo>
+-- O cliente envia por URL de upload assinada gerada pelo servidor.
 -- ---------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -526,20 +335,7 @@ values (
 )
 on conflict (id) do nothing;
 
-create policy "fotos: dono ou admin lê" on storage.objects
-  for select to authenticated
-  using (
-    bucket_id = 'fotos'
-    and public.pode_acessar_pasta((storage.foldername(name))[1])
-  );
-
-create policy "fotos: dono ou admin envia" on storage.objects
-  for insert to authenticated
-  with check (
-    bucket_id = 'fotos'
-    and public.pode_acessar_pasta((storage.foldername(name))[1])
-  );
-
-create policy "fotos: admin apaga" on storage.objects
-  for delete to authenticated
-  using (bucket_id = 'fotos' and public.is_admin());
+create policy "fotos: só o tatuador" on storage.objects
+  for all to authenticated
+  using (bucket_id = 'fotos' and public.is_admin())
+  with check (bucket_id = 'fotos' and public.is_admin());

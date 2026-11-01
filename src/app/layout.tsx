@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Cabecalho } from "@/components/cabecalho";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: { default: "Estúdio de Tatuagem", template: "%s · Estúdio de Tatuagem" },
-  description: "Peça seu orçamento de tatuagem e converse direto com o tatuador.",
+  description: "Peça seu orçamento de tatuagem.",
 };
 
 export const viewport: Viewport = {
@@ -28,10 +27,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="pt-BR"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col">
-        <Cabecalho />
-        <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-6">{children}</main>
-      </body>
+      <body className="flex min-h-full flex-col">{children}</body>
     </html>
   );
 }

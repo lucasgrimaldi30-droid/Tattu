@@ -1,8 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-/** Rotas que exigem login. */
-const ROTAS_PROTEGIDAS = ["/admin", "/meus-orcamentos", "/orcamentos"];
+/** Rotas que exigem login (só o tatuador entra). */
+const ROTAS_PROTEGIDAS = ["/admin"];
 
 /**
  * Renova a sessão do Supabase (cookies) a cada requisição e manda para
@@ -39,7 +39,7 @@ export async function atualizarSessao(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const logado = Boolean(data?.claims?.sub);
 
-  const { pathname, search } = request.nextUrl;
+  const { pathname } = request.nextUrl;
   const protegida = ROTAS_PROTEGIDAS.some(
     (rota) => pathname === rota || pathname.startsWith(`${rota}/`),
   );
@@ -47,7 +47,7 @@ export async function atualizarSessao(request: NextRequest) {
   if (protegida && !logado) {
     const url = request.nextUrl.clone();
     url.pathname = "/entrar";
-    url.search = `?proximo=${encodeURIComponent(pathname + search)}`;
+    url.search = "";
     return NextResponse.redirect(url);
   }
 

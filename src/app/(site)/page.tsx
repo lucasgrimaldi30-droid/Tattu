@@ -11,10 +11,10 @@ export default function Inicio() {
           Sua ideia, do esboço à pele.
         </h1>
         <p className="text-lg text-stone-300">
-          Conte o que você imagina, mande fotos do local e de referências, e eu te
-          respondo com valor e data. Tudo por aqui, sem perder conversa no WhatsApp.
+          Conte o que você imagina e mande fotos do local e de referências. Depois
+          a gente continua no WhatsApp para fechar valor e data.
         </p>
-        <Link href="/meus-orcamentos" className="botao text-lg">
+        <Link href="/orcamento" className="botao text-lg">
           Pedir orçamento
         </Link>
       </section>
@@ -22,7 +22,7 @@ export default function Inicio() {
       <section className="grid gap-3 sm:grid-cols-3">
         {[
           ["1. Conte a ideia", "Descrição, local do corpo, tamanho e fotos de referência."],
-          ["2. A gente conversa", "Chat direto comigo para ajustar o desenho e o valor."],
+          ["2. A gente conversa", "No WhatsApp, para ajustar o desenho, o valor e a data."],
           ["3. Agende e tatue", "Pagamento só no final da sessão: Pix, dinheiro ou cartão."],
         ].map(([titulo, texto]) => (
           <div key={titulo} className="cartao">
