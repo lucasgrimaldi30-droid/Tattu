@@ -3,6 +3,8 @@ import Link from "next/link";
 import { exigirAdmin } from "@/lib/auth";
 import { criarClienteServidor } from "@/lib/supabase/server";
 import { ListaPedidos, SELECT_RESUMO, type PedidoResumo } from "@/components/lista-pedidos";
+import { formatarMoeda } from "@/lib/formatos";
+import { hojeNaBahia } from "@/lib/datas";
 
 export const metadata: Metadata = { title: "Painel" };
 
@@ -22,7 +24,8 @@ export default async function Painel() {
   const supabase = await criarClienteServidor();
   const { inicio, fim } = semanaAtual();
 
-  const [novos, negociando, sessoes, insumos, recentes] = await Promise.all([
+  const mesAtual = `${hojeNaBahia().slice(0, 7)}-01`;
+  const [novos, negociando, sessoes, insumos, recentes, resultadoMes] = await Promise.all([
     supabase.from("orcamentos").select("id", { count: "exact", head: true }).eq("status", "novo"),
     supabase
       .from("orcamentos")
@@ -42,6 +45,7 @@ export default async function Painel() {
       .order("criado_em", { ascending: false })
       .limit(5)
       .returns<PedidoResumo[]>(),
+    supabase.from("resultado_mensal").select("faturamento, margem").eq("mes", mesAtual).maybeSingle(),
   ]);
 
   const abaixoDoMinimo =
@@ -50,8 +54,10 @@ export default async function Painel() {
   const cartoes = [
     { titulo: "Pedidos novos", valor: novos.count ?? 0, href: "/admin/orcamentos?status=novo" },
     { titulo: "Em negociação", valor: negociando.count ?? 0, href: "/admin/orcamentos?status=negociando" },
-    { titulo: "Sessões nesta semana", valor: sessoes.count ?? 0 },
-    { titulo: "Insumos abaixo do mínimo", valor: abaixoDoMinimo, alerta: abaixoDoMinimo > 0 },
+    { titulo: "Sessões nesta semana", valor: sessoes.count ?? 0, href: "/admin/agenda" },
+    { titulo: "Insumos abaixo do mínimo", valor: abaixoDoMinimo, alerta: abaixoDoMinimo > 0, href: "/admin/insumos" },
+    { titulo: "Faturado no mês", valor: formatarMoeda(resultadoMes.data?.faturamento ?? 0), href: "/admin/relatorios" },
+    { titulo: "Margem no mês", valor: formatarMoeda(resultadoMes.data?.margem ?? 0), href: "/admin/relatorios" },
   ];
 
   return (
@@ -65,7 +71,7 @@ export default async function Painel() {
         {cartoes.map((c) => {
           const conteudo = (
             <>
-              <p className={`text-3xl font-bold ${c.alerta ? "text-rose-400" : ""}`}>{c.valor}</p>
+              <p className={`text-2xl font-bold ${c.alerta ? "text-rose-400" : ""}`}>{c.valor}</p>
               <p className="mt-1 text-sm text-stone-400">{c.titulo}</p>
             </>
           );

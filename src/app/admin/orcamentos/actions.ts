@@ -5,6 +5,8 @@ import { exigirAdmin } from "@/lib/auth";
 import { registrarPedido, type ResultadoPedido } from "@/lib/pedidos";
 import { criarClienteServidor } from "@/lib/supabase/server";
 import { STATUS_ORCAMENTO } from "@/lib/constantes";
+import { lerNumero } from "@/lib/numeros";
+import { deCampoDataHora } from "@/lib/datas";
 
 /** Pedido lançado pelo tatuador (ex.: chegou pelo WhatsApp). */
 export async function lancarPedido(formData: FormData): Promise<ResultadoPedido> {
@@ -18,20 +20,7 @@ export async function lancarPedido(formData: FormData): Promise<ResultadoPedido>
 export type EstadoResposta = { erro?: string; ok?: boolean };
 
 function numero(formData: FormData, campo: string) {
-  let v = String(formData.get(campo) ?? "").trim().replace(/^R\$\s*/, "");
-  // "1.200,50" (pt-BR) → "1200.50"; "1200.50" fica como está.
-  if (v.includes(",")) v = v.replace(/\./g, "").replace(",", ".");
-  if (!v) return null;
-  const n = Number(v);
-  return Number.isFinite(n) && n >= 0 ? n : NaN;
-}
-
-/** "2026-11-20T14:30" digitado no fuso da Bahia → ISO com -03:00. */
-function dataHoraLocal(valor: string) {
-  if (!valor) return null;
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(valor)) return undefined;
-  // America/Bahia não tem horário de verão: sempre UTC−3.
-  return `${valor}:00-03:00`;
+  return lerNumero(formData.get(campo));
 }
 
 export async function responderOrcamento(
@@ -46,7 +35,7 @@ export async function responderOrcamento(
   const horas = numero(formData, "tempo_horas");
   const sessoes = numero(formData, "sessoes_previstas");
   const status = String(formData.get("status") ?? "");
-  const proposta = dataHoraLocal(String(formData.get("proposta_data") ?? ""));
+  const proposta = deCampoDataHora(String(formData.get("proposta_data") ?? ""));
 
   if ([valorMin, valorMax, horas, sessoes].some((n) => Number.isNaN(n))) {
     return { erro: "Confira os números (valores, horas e sessões)." };
@@ -81,4 +70,45 @@ export async function responderOrcamento(
 
   revalidatePath("/admin", "layout");
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------
+// Pagamento (só no final; pode ter mais de um, ex.: tattoo em 2 sessões)
+// ---------------------------------------------------------------------
+const FORMAS = ["pix", "dinheiro", "debito", "credito"];
+
+export async function registrarPagamento(
+  orcamentoId: string,
+  _: { erro?: string; ok?: string },
+  formData: FormData,
+): Promise<{ erro?: string; ok?: string }> {
+  await exigirAdmin();
+  const valor = lerNumero(formData.get("valor"));
+  const forma = String(formData.get("forma") ?? "");
+  const data = String(formData.get("data") ?? "");
+  const finalizar = formData.get("finalizar") === "on";
+
+  if (valor == null || Number.isNaN(valor) || valor <= 0) return { erro: "Informe o valor recebido." };
+  if (!FORMAS.includes(forma)) return { erro: "Escolha a forma de pagamento." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return { erro: "Data inválida." };
+
+  const supabase = await criarClienteServidor();
+  const { error } = await supabase
+    .from("pagamentos")
+    .insert({ orcamento_id: orcamentoId, valor, forma, data });
+  if (error) return { erro: "Não foi possível registrar o pagamento." };
+
+  if (finalizar) {
+    await supabase.from("orcamentos").update({ status: "concluido" }).eq("id", orcamentoId);
+  }
+
+  revalidatePath("/admin", "layout");
+  return { ok: finalizar ? "Pagamento registrado e tattoo concluída." : "Pagamento registrado." };
+}
+
+export async function excluirPagamento(id: string) {
+  await exigirAdmin();
+  const supabase = await criarClienteServidor();
+  await supabase.from("pagamentos").delete().eq("id", id);
+  revalidatePath("/admin", "layout");
 }

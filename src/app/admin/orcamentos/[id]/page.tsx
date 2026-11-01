@@ -4,9 +4,12 @@ import { exigirAdmin } from "@/lib/auth";
 import { criarClienteServidor } from "@/lib/supabase/server";
 import { LOCAIS_CORPO, type LocalCorpo, type StatusOrcamento } from "@/lib/constantes";
 import { formatarDataHora } from "@/lib/formatos";
+import { paraCampoDataHora } from "@/lib/datas";
 import { formatarTelefone, linkWhatsApp } from "@/lib/telefone";
 import { SeloStatus } from "@/components/selo-status";
 import { FormularioResposta } from "./formulario-resposta";
+import { SecaoSessoes } from "./secao-sessoes";
+import { SecaoPagamento } from "./secao-pagamento";
 
 export const metadata: Metadata = { title: "Pedido" };
 
@@ -32,12 +35,6 @@ type Pedido = {
 };
 
 const ORIGEM: Record<string, string> = { site: "Site", whatsapp: "WhatsApp", manual: "Outro" };
-
-/** "2026-11-20T14:30" no relógio da Bahia (UTC−3), para o campo datetime-local. */
-function paraCampoDataHora(iso: string | null) {
-  if (!iso) return "";
-  return new Date(new Date(iso).getTime() - 3 * 60 * 60 * 1000).toISOString().slice(0, 16);
-}
 
 export default async function DetalhePedido({ params }: PageProps<"/admin/orcamentos/[id]">) {
   await exigirAdmin();
@@ -151,6 +148,18 @@ export default async function DetalhePedido({ params }: PageProps<"/admin/orcame
           }}
         />
       </section>
+
+      <SecaoSessoes
+        orcamentoId={pedido.id}
+        tempoEstimadoMin={pedido.tempo_estimado_min}
+        propostaData={pedido.proposta_data}
+      />
+
+      <SecaoPagamento
+        orcamentoId={pedido.id}
+        valorSugerido={pedido.valor_max ?? pedido.valor_min}
+        concluido={pedido.status === "concluido"}
+      />
     </div>
   );
 }
